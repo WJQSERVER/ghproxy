@@ -2,17 +2,20 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"ghproxy/config"
 	"io"
 	"net/http"
 	"strconv"
 
-	"github.com/WJQSERVER-STUDIO/go-utils/copyb"
-	"github.com/gin-gonic/gin"
+	"github.com/cloudwego/hertz/pkg/app"
+	//hclient "github.com/cloudwego/hertz/pkg/app/client"
+	//"github.com/cloudwego/hertz/pkg/protocol"
+	hresp "github.com/cloudwego/hertz/pkg/protocol/http1/resp"
 )
 
-func ChunkedProxyRequest(c *gin.Context, u string, cfg *config.Config, matcher string) {
+func ChunkedProxyRequest(ctx context.Context, c *app.RequestContext, u string, cfg *config.Config, matcher string) {
 	method := c.Request.Method
 
 	// 发送HEAD请求, 预获取Content-Length
@@ -44,21 +47,40 @@ func ChunkedProxyRequest(c *gin.Context, u string, cfg *config.Config, matcher s
 		size, err := strconv.Atoi(contentLength)
 		if err == nil && size > sizelimit {
 			finalURL := headResp.Request.URL.String()
-			c.Redirect(http.StatusMovedPermanently, finalURL)
-			logWarning("%s %s %s %s %s Final-URL: %s Size-Limit-Exceeded: %d", c.ClientIP(), c.Request.Method, c.Request.URL.String(), c.Request.Header.Get("User-Agent"), c.Request.Proto, finalURL, size)
+			c.Redirect(http.StatusMovedPermanently, []byte(finalURL))
+			logWarning("%s %s %s %s %s Final-URL: %s Size-Limit-Exceeded: %d", c.ClientIP(), c.Request.Method, c.Path(), c.Request.Header.Get("User-Agent"), c.Request.Header.GetProtocol(), finalURL, size)
 			return
 		}
 	}
 
-	body, err := readRequestBody(c)
-	if err != nil {
-		HandleError(c, err.Error())
-		return
-	}
+	body := c.Request.Body()
+	/*
+
+		hc, _ := hclient.NewClient(client.WithResponseBodyStream(true))
+		req := &protocol.Request{}
+		resp := &protocol.Response{}
+
+		defer func() {
+			protocol.ReleaseRequest(req)
+			protocol.ReleaseResponse(resp)
+		}()
+
+		req.SetMethod(string(method()))
+		req.SetRequestURI(u)
+		req.SetBodyStream(bytes.NewReader(body), len(body))
+
+		err = hc.Do(context.Background(), req, resp)
+		if err != nil {
+			logError("Failed to send request: %v", err)
+			return
+		}
+
+		bodyStream := resp.GetHijackWriter()
+	*/
 
 	bodyReader := bytes.NewBuffer(body)
 
-	req, err := client.NewRequest(method, u, bodyReader)
+	req, err := client.NewRequest(string(method()), u, bodyReader)
 	if err != nil {
 		HandleError(c, fmt.Sprintf("Failed to create request: %v", err))
 		return
@@ -86,8 +108,8 @@ func ChunkedProxyRequest(c *gin.Context, u string, cfg *config.Config, matcher s
 		size, err := strconv.Atoi(contentLength)
 		if err == nil && size > sizelimit {
 			finalURL := resp.Request.URL.String()
-			c.Redirect(http.StatusMovedPermanently, finalURL)
-			logWarning("%s %s %s %s %s Final-URL: %s Size-Limit-Exceeded: %d", c.ClientIP(), c.Request.Method, c.Request.URL.String(), c.Request.Header.Get("User-Agent"), c.Request.Proto, finalURL, size)
+			c.Redirect(http.StatusMovedPermanently, []byte(finalURL))
+			logWarning("%s %s %s %s %s Final-URL: %s Size-Limit-Exceeded: %d", c.ClientIP(), c.Request.Method, c.Path(), c.Request.Header.Get("User-Agent"), c.Request.Header.GetProtocol(), finalURL, size)
 			return
 		}
 	}
@@ -131,6 +153,7 @@ func ChunkedProxyRequest(c *gin.Context, u string, cfg *config.Config, matcher s
 	}
 
 	c.Status(resp.StatusCode)
+	c.Response.HijackWriter(hresp.NewChunkedBodyWriter(&c.Response, c.GetWriter()))
 
 	if MatcherShell(u) && matchString(matcher, matchedMatchers) && cfg.Shell.Editor {
 		// 判断body是不是gzip
@@ -139,23 +162,79 @@ func ChunkedProxyRequest(c *gin.Context, u string, cfg *config.Config, matcher s
 			compress = "gzip"
 		}
 
-		logInfo("Is Shell: %s %s %s %s %s", c.ClientIP(), method, u, c.Request.Header.Get("User-Agent"), c.Request.Proto)
+		logInfo("Is Shell: %s %s %s %s %s", c.ClientIP(), method, u, c.Request.Header.Get("User-Agent"), c.Request.Header.GetProtocol())
 		c.Header("Content-Length", "")
-		_, err = processLinks(resp.Body, c.Writer, compress, c.Request.Host, cfg)
+
+		ProcessLinksAndWriteChunked(resp.Body, compress, string(c.Request.Host()), cfg, c)
+
+		//ProcessAndWriteChunkedBody(resp.Body, compress, string(c.Request.Host()), cfg, c)
+
+		/*
+			presp, err := processLinks(resp.Body, compress, string(c.Request.Host()), cfg)
+			if err != nil {
+				logError("Failed to process links: %v", err)
+				WriteChunkedBody(resp.Body, c)
+				return
+			}
+			defer presp.Close()
+			WriteChunkedBody(presp, c)
+		*/
+
 		if err != nil {
-			logError("%s %s %s %s %s Failed to copy response body: %v", c.ClientIP(), method, u, c.Request.Header.Get("User-Agent"), c.Request.Proto, err)
+			logError("%s %s %s %s %s Failed to copy response body: %v", c.ClientIP(), method, u, c.Request.Header.Get("User-Agent"), c.Request.Header.GetProtocol(), err)
 			return
 		} else {
-			c.Writer.Flush() // 确保刷入
+			c.Flush() // 确保刷入
 		}
 	} else {
+		WriteChunkedBody(resp.Body, c)
 		//_, err = io.CopyBuffer(c.Writer, resp.Body, nil)
-		_, err = copyb.CopyBuffer(c.Writer, resp.Body, nil)
+		//_, err = copyb.CopyBuffer(c, resp.Body, nil)
+
+		/*
+			buffer := make([]byte, 32768) // 可以根据需要调整缓冲区大小
+			for {
+				n, err := resp.Body.Read(buffer)
+				if err != nil {
+					if err != io.EOF {
+						fmt.Println("读取错误:", err)
+						c.String(http.StatusInternalServerError, "读取错误")
+						return
+					}
+					break // 读取到文件末尾
+				}
+
+				_, err = c.Write(buffer[:n]) // 写入 chunk
+				if err != nil {
+					fmt.Println("写入 chunk 错误:", err)
+					return
+				}
+
+				c.Flush() // 刷新 chunk 到客户端
+			}
+		*/
+
+		/*
+			var result bytes.Buffer
+			buffer := make([]byte, 32*1024)
+
+			for {
+				n, err := resp.Body.Read(buffer)
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+				}
+				chunk := buffer[:n]
+				result.Write(chunk)
+				_, err = c.Write(chunk)
+			}
+		*/
 		if err != nil {
-			logError("%s %s %s %s %s Failed to copy response body: %v", c.ClientIP(), method, u, c.Request.Header.Get("User-Agent"), c.Request.Proto, err)
+			logError("%s %s %s %s %s Failed to copy response body: %v", c.ClientIP(), method, u, c.Request.Header.Get("User-Agent"), c.Request.Header.GetProtocol(), err)
 			return
 		} else {
-			c.Writer.Flush() // 确保刷入
+			c.Flush() // 确保刷入
 		}
 	}
 }

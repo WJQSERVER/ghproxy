@@ -201,4 +201,6 @@ USDT(TRC20): `TNfSYG6F2vkiibd6J6mhhHNWDgWgNdF5hN`
 
 ### 捐赠列表
 
-虚位以待...
+| 赞助人    |金额|
+|--------|------|
+| starry | 8 USDT (TRC20)   |
