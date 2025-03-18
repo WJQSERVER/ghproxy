@@ -38,12 +38,16 @@ var (
 )
 
 var (
-	//go:embed pages/bootstrap/*
+	//go:embed pages/*
 	pagesFS embed.FS
-	//go:embed pages/nebula/*
-	NebulaPagesFS embed.FS
-	//go:embed pages/design/*
-	DesignPagesFS embed.FS
+	/*
+		//go:embed pages/bootstrap/*
+		BootstrapPagesFS embed.FS
+		//go:embed pages/nebula/*
+		NebulaPagesFS embed.FS
+		//go:embed pages/design/*
+		DesignPagesFS embed.FS
+	*/
 )
 
 var (
@@ -115,14 +119,17 @@ func InitReq(cfg *config.Config) {
 func loadEmbeddedPages(cfg *config.Config) (fs.FS, error) {
 	var pages fs.FS
 	var err error
-
 	switch cfg.Pages.Theme {
 	case "bootstrap":
 		pages, err = fs.Sub(pagesFS, "pages/bootstrap")
 	case "nebula":
-		pages, err = fs.Sub(NebulaPagesFS, "pages/nebula")
+		pages, err = fs.Sub(pagesFS, "pages/nebula")
 	case "design":
-		pages, err = fs.Sub(DesignPagesFS, "pages/design")
+		pages, err = fs.Sub(pagesFS, "pages/design")
+	case "metro":
+		pages, err = fs.Sub(pagesFS, "pages/metro")
+	case "classic":
+		pages, err = fs.Sub(pagesFS, "pages/classic")
 	default:
 		pages, err = fs.Sub(pagesFS, "pages/bootstrap") // 默认主题
 		logWarning("Invalid Pages Theme: %s, using default theme 'bootstrap'", cfg.Pages.Theme)
